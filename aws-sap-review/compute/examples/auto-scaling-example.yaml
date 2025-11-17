@@ -1,0 +1,324 @@
+# CloudFormation template for Auto Scaling with mixed instances and multiple policies
+# Demonstrates SAP-level understanding of cost optimization and high availability
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Production-grade Auto Scaling with Spot, On-Demand, and multiple scaling policies'
+
+Parameters:
+  VPCId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC for the Auto Scaling Group
+
+  PrivateSubnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets for instances (multi-AZ)
+
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: EC2 Key Pair for SSH access
+
+Resources:
+  # Launch Template (preferred over Launch Configuration)
+  AppLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: app-launch-template
+      LaunchTemplateData:
+        ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2}}'
+        InstanceType: t3.medium
+        KeyName: !Ref KeyName
+        IamInstanceProfile:
+          Arn: !GetAtt InstanceProfile.Arn
+        SecurityGroupIds:
+          - !Ref InstanceSecurityGroup
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            yum update -y
+            yum install -y amazon-cloudwatch-agent
+
+            # Install application
+            aws s3 cp s3://my-app-bucket/app.zip /tmp/
+            unzip /tmp/app.zip -d /opt/app
+
+            # Start CloudWatch agent for custom metrics
+            /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+              -a fetch-config -m ec2 -s -c ssm:cloudwatch-config
+
+            # Start application
+            cd /opt/app && ./start.sh
+
+        # Enable detailed monitoring for 1-minute CloudWatch metrics
+        Monitoring:
+          Enabled: true
+
+        # IMDSv2 for enhanced security
+        MetadataOptions:
+          HttpTokens: required
+          HttpPutResponseHopLimit: 1
+
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: app-server
+              - Key: Environment
+                Value: production
+
+  # Auto Scaling Group with mixed instances policy
+  AppAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: app-asg
+      VPCZoneIdentifier: !Ref PrivateSubnets
+      MinSize: 2
+      MaxSize: 20
+      DesiredCapacity: 4
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
+      TargetGroupARNs:
+        - !Ref TargetGroup
+
+      # Mixed Instances Policy for cost optimization
+      MixedInstancesPolicy:
+        InstancesDistribution:
+          OnDemandBaseCapacity: 2  # Minimum 2 On-Demand for stability
+          OnDemandPercentageAboveBaseCapacity: 25  # 25% On-Demand, 75% Spot
+          SpotAllocationStrategy: capacity-optimized  # Best practice for availability
+          SpotInstancePools: 4  # Diversify across instance types
+          SpotMaxPrice: ''  # Pay up to On-Demand price (recommended)
+
+        LaunchTemplate:
+          LaunchTemplateSpecification:
+            LaunchTemplateId: !Ref AppLaunchTemplate
+            Version: !GetAtt AppLaunchTemplate.LatestVersionNumber
+
+          Overrides:
+            - InstanceType: t3.medium
+            - InstanceType: t3a.medium
+            - InstanceType: t2.medium
+            - InstanceType: m5.large
+            - InstanceType: m5a.large
+
+      Tags:
+        - Key: Name
+          Value: app-asg-instance
+          PropagateAtLaunch: true
+        - Key: CostCenter
+          Value: engineering
+          PropagateAtLaunch: true
+
+  # Target Tracking Scaling Policy - CPU
+  CPUScalingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AppAutoScalingGroup
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+        TargetValue: 50.0
+
+  # Target Tracking Scaling Policy - ALB Request Count
+  RequestCountScalingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AppAutoScalingGroup
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ALBRequestCountPerTarget
+          ResourceLabel: !Join
+            - '/'
+            - - !GetAtt LoadBalancer.LoadBalancerFullName
+              - !GetAtt TargetGroup.TargetGroupFullName
+        TargetValue: 1000.0
+
+  # Step Scaling Policy for aggressive scale-out during traffic spikes
+  StepScalingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AppAutoScalingGroup
+      PolicyType: StepScaling
+      AdjustmentType: PercentChangeInCapacity
+      MetricAggregationType: Average
+      EstimatedInstanceWarmup: 300
+      StepAdjustments:
+        - MetricIntervalLowerBound: 0
+          MetricIntervalUpperBound: 20
+          ScalingAdjustment: 10
+        - MetricIntervalLowerBound: 20
+          MetricIntervalUpperBound: 40
+          ScalingAdjustment: 30
+        - MetricIntervalLowerBound: 40
+          ScalingAdjustment: 50
+
+  # CloudWatch Alarm to trigger Step Scaling
+  HighCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: app-high-cpu
+      AlarmDescription: Trigger aggressive scaling on high CPU
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 70
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AppAutoScalingGroup
+      AlarmActions:
+        - !Ref StepScalingPolicy
+
+  # Scheduled Scaling for predictable traffic patterns
+  MorningScaleUp:
+    Type: AWS::AutoScaling::ScheduledAction
+    Properties:
+      AutoScalingGroupName: !Ref AppAutoScalingGroup
+      MinSize: 4
+      MaxSize: 20
+      DesiredCapacity: 8
+      Recurrence: "0 8 * * MON-FRI"  # 8 AM weekdays
+
+  EveningScaleDown:
+    Type: AWS::AutoScaling::ScheduledAction
+    Properties:
+      AutoScalingGroupName: !Ref AppAutoScalingGroup
+      MinSize: 2
+      MaxSize: 10
+      DesiredCapacity: 2
+      Recurrence: "0 18 * * *"  # 6 PM daily
+
+  # Application Load Balancer
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: app-alb
+      Type: application
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Subnets: !Ref PrivateSubnets  # Use public subnets in production
+      Tags:
+        - Key: Name
+          Value: app-alb
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: app-tg
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref VPCId
+      HealthCheckEnabled: true
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      TargetType: instance
+      # Deregistration delay for graceful shutdown
+      DeregistrationDelay: 30
+      Tags:
+        - Key: Name
+          Value: app-tg
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # Security Groups
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: alb-sg
+      GroupDescription: Security group for Application Load Balancer
+      VpcId: !Ref VPCId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: instance-sg
+      GroupDescription: Security group for EC2 instances
+      VpcId: !Ref VPCId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !Ref BastionSecurityGroup  # Restrict SSH
+
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: bastion-sg
+      GroupDescription: Security group for bastion host
+      VpcId: !Ref VPCId
+
+  # IAM Role for EC2 instances
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: app-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: arn:aws:s3:::my-app-bucket/*
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref InstanceRole
+
+Outputs:
+  LoadBalancerDNS:
+    Description: DNS name of the load balancer
+    Value: !GetAtt LoadBalancer.DNSName
+
+  AutoScalingGroupName:
+    Description: Name of the Auto Scaling Group
+    Value: !Ref AppAutoScalingGroup
+
+# Key SAP Concepts Demonstrated:
+# 1. Mixed instances policy (cost optimization)
+# 2. Multiple scaling policies (target tracking + step + scheduled)
+# 3. Spot instance best practices (capacity-optimized, multiple instance types)
+# 4. Security best practices (IMDSv2, security groups, IAM roles)
+# 5. High availability (multi-AZ, health checks)
+# 6. Monitoring (detailed monitoring, CloudWatch alarms)
+# 7. Graceful shutdown (deregistration delay)
