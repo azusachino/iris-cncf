@@ -1,0 +1,110 @@
+# SSH Server Configuration
+# Managed by Ansible - DO NOT EDIT MANUALLY
+
+# Port and listening address
+Port {{ common_ssh_port }}
+AddressFamily any
+ListenAddress 0.0.0.0
+ListenAddress ::
+
+# Logging
+SyslogFacility AUTH
+LogLevel VERBOSE
+
+# Authentication
+LoginGraceTime 1m
+PermitRootLogin {{ common_ssh_permit_root_login }}
+StrictModes yes
+MaxAuthTries {{ common_ssh_max_auth_tries }}
+MaxSessions {{ common_ssh_max_sessions }}
+
+PubkeyAuthentication {{ common_ssh_pubkey_authentication }}
+AuthorizedKeysFile .ssh/authorized_keys .ssh/authorized_keys2
+
+# For this to work you will also need host keys in /etc/ssh/ssh_known_hosts
+HostbasedAuthentication no
+IgnoreUserKnownHosts yes
+IgnoreRhosts yes
+
+# Password authentication
+PasswordAuthentication {{ common_ssh_password_authentication }}
+PermitEmptyPasswords no
+
+# Challenge-response passwords
+ChallengeResponseAuthentication {{ common_ssh_challenge_response_auth }}
+
+# Kerberos options
+KerberosAuthentication no
+KerberosOrLocalPasswd yes
+KerberosTicketCleanup yes
+KerberosGetAFSToken no
+
+# GSSAPI options
+GSSAPIAuthentication no
+GSSAPICleanupCredentials yes
+
+# Set this to 'yes' to enable PAM authentication
+UsePAM {{ common_ssh_use_pam }}
+
+# Forwarding
+AllowAgentForwarding yes
+AllowTcpForwarding yes
+GatewayPorts no
+X11Forwarding {{ common_ssh_x11_forwarding }}
+X11DisplayOffset 10
+X11UseLocalhost yes
+PermitTTY yes
+PrintMotd no
+PrintLastLog yes
+TCPKeepAlive yes
+PermitUserEnvironment no
+Compression delayed
+
+# Client timeout
+ClientAliveInterval {{ common_ssh_client_alive_interval }}
+ClientAliveCountMax {{ common_ssh_client_alive_count_max }}
+
+# Disable tunneling
+PermitTunnel no
+
+# Override default of no subsystems
+Subsystem sftp /usr/lib/openssh/sftp-server
+
+# Example of overriding settings on a per-user basis
+#Match User anoncvs
+#       X11Forwarding no
+#       AllowTcpForwarding no
+#       PermitTTY no
+#       ForceCommand cvs server
+
+# Security hardening
+Protocol 2
+HostKey /etc/ssh/ssh_host_rsa_key
+HostKey /etc/ssh/ssh_host_ecdsa_key
+HostKey /etc/ssh/ssh_host_ed25519_key
+
+# Ciphers and algorithms
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,hmac-sha2-512,hmac-sha2-256
+KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512,diffie-hellman-group-exchange-sha256
+
+# Only allow specific users/groups (optional)
+{% if common_ssh_allowed_users is defined %}
+AllowUsers {{ common_ssh_allowed_users | join(' ') }}
+{% endif %}
+{% if common_ssh_allowed_groups is defined %}
+AllowGroups {{ common_ssh_allowed_groups | join(' ') }}
+{% endif %}
+
+# Banner
+{% if common_ssh_banner is defined %}
+Banner {{ common_ssh_banner }}
+{% else %}
+Banner none
+{% endif %}
+
+# Accept locale-related environment variables
+AcceptEnv LANG LC_*
+
+# Show login message
+UseDNS no

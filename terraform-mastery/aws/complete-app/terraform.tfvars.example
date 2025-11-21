@@ -1,0 +1,46 @@
+# Example terraform.tfvars file
+# Copy this file to terraform.tfvars and fill in your values
+
+aws_region   = "us-east-1"
+environment  = "production"
+project_name = "myapp"
+cost_center  = "engineering"
+domain_name  = "example.com"
+
+# VPC
+vpc_cidr = "10.0.0.0/16"
+
+# Application
+app_port         = 8080
+app_count        = 3
+fargate_cpu      = 512
+fargate_memory   = 1024
+container_image  = "123456789012.dkr.ecr.us-east-1.amazonaws.com/myapp:latest"
+
+# Database
+db_instance_class    = "db.r6g.large"
+db_allocated_storage = 100
+db_name              = "appdb"
+db_username          = "dbadmin"
+db_password          = "CHANGE_ME_IN_PRODUCTION"  # Use AWS Secrets Manager
+
+# Redis
+redis_node_type  = "cache.r6g.large"
+redis_auth_token = "CHANGE_ME_IN_PRODUCTION"
+
+# Auto Scaling
+autoscaling_min_capacity  = 2
+autoscaling_max_capacity  = 20
+autoscaling_target_cpu    = 70
+autoscaling_target_memory = 80
+
+# Monitoring
+alert_email              = "alerts@example.com"
+enable_container_insights = true
+
+# Additional Tags
+additional_tags = {
+  Owner       = "DevOps Team"
+  Compliance  = "HIPAA"
+  DataClass   = "Sensitive"
+}

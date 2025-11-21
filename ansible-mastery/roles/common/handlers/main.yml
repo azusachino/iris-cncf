@@ -1,0 +1,29 @@
+---
+# Handlers for common role
+
+- name: restart sshd
+  service:
+    name: sshd
+    state: restarted
+
+- name: restart fail2ban
+  service:
+    name: fail2ban
+    state: restarted
+
+- name: restart rsyslog
+  service:
+    name: rsyslog
+    state: restarted
+
+- name: restart chrony
+  service:
+    name: chrony
+    state: restarted
+
+- name: reload systemd
+  systemd:
+    daemon_reload: yes
+
+- name: disable swap
+  command: swapoff -a

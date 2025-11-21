@@ -1,0 +1,529 @@
+# AWS Database Services - Complete Examples and Scenarios
+
+## Table of Contents
+1. [RDS Multi-AZ with Read Replicas](#rds-multi-az)
+2. [DynamoDB Global Tables](#dynamodb-global)
+3. [Aurora Serverless v2 Auto-Scaling](#aurora-serverless)
+4. [ElastiCache Redis Cluster Mode](#elasticache-cluster)
+5. [Database Migration Strategies](#migration)
+
+---
+
+## 1. RDS Multi-AZ with Read Replicas <a name="rds-multi-az"></a>
+
+### Architecture
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Application Tier                         │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐                  │
+│  │  App 1   │  │  App 2   │  │  App 3   │                  │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘                  │
+└───────┼─────────────┼─────────────┼────────────────────────┘
+        │             │             │
+        │ (writes)    │ (writes)    │ (reads)
+        ▼             ▼             ▼
+  ┌─────────────┐              ┌──────────────┐
+  │   Primary   │──sync────────▶│   Standby    │
+  │  us-east-1a │  replica      │  us-east-1b  │
+  └──────┬──────┘              └──────────────┘
+         │ async
+         │ replication
+         ▼
+  ┌─────────────┐              ┌──────────────┐
+  │ Read Replica│              │ Read Replica │
+  │  us-east-1c │              │  us-west-2a  │
+  └─────────────┘              └──────────────┘
+```
+
+### CloudFormation Template
+
+```yaml
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Production-grade RDS PostgreSQL with Multi-AZ, Read Replicas, and Monitoring'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: production
+    AllowedValues:
+      - development
+      - staging
+      - production
+
+  DBInstanceClass:
+    Type: String
+    Default: db.r6g.xlarge
+    Description: Database instance type (Graviton for cost optimization)
+
+  DBAllocatedStorage:
+    Type: Number
+    Default: 500
+    MinValue: 100
+    MaxValue: 65536
+    Description: Allocated storage in GB
+
+  DBName:
+    Type: String
+    Default: myapp
+    Description: Database name
+
+  DBUsername:
+    Type: String
+    Default: dbadmin
+    Description: Database admin username
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+    Description: Database admin password (min 16 characters)
+
+  VPCId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC for database
+
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets for database (minimum 2 in different AZs)
+
+  ApplicationSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group of application servers
+
+Resources:
+  # DB Subnet Group
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: !Sub '${Environment}-db-subnet-group'
+      DBSubnetGroupDescription: Subnet group for RDS instances
+      SubnetIds: !Ref PrivateSubnetIds
+      Tags:
+        - Key: Name
+          Value: !Sub '${Environment}-db-subnet-group'
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Security Group for RDS
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${Environment}-rds-sg'
+      GroupDescription: Security group for RDS instances
+      VpcId: !Ref VPCId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref ApplicationSecurityGroupId
+          Description: Allow PostgreSQL from application tier
+      Tags:
+        - Key: Name
+          Value: !Sub '${Environment}-rds-sg'
+
+  # Parameter Group for PostgreSQL optimization
+  DBParameterGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      DBParameterGroupName: !Sub '${Environment}-postgres14-params'
+      Description: Optimized parameters for PostgreSQL 14
+      Family: postgres14
+      Parameters:
+        # Connection settings
+        max_connections: '500'
+
+        # Memory settings (for db.r6g.xlarge: 32GB RAM)
+        shared_buffers: '{DBInstanceClassMemory/4096}'  # 8GB
+        effective_cache_size: '{DBInstanceClassMemory/2048}'  # 16GB
+        maintenance_work_mem: '2097152'  # 2GB
+        work_mem: '10240'  # 10MB per query
+
+        # Write-Ahead Log (WAL)
+        wal_buffers: '16384'  # 16MB
+        checkpoint_completion_target: '0.9'
+        max_wal_size: '4096'  # 4GB
+        min_wal_size: '2048'  # 2GB
+
+        # Query optimization
+        random_page_cost: '1.1'  # SSD-optimized
+        effective_io_concurrency: '200'
+
+        # Logging
+        log_min_duration_statement: '1000'  # Log queries > 1s
+        log_connections: '1'
+        log_disconnections: '1'
+        log_lock_waits: '1'
+
+        # Performance
+        shared_preload_libraries: 'pg_stat_statements'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Option Group
+  DBOptionGroup:
+    Type: AWS::RDS::OptionGroup
+    Properties:
+      OptionGroupName: !Sub '${Environment}-postgres14-options'
+      OptionGroupDescription: Option group for PostgreSQL 14
+      EngineName: postgres
+      MajorEngineVersion: '14'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # KMS Key for encryption
+  DBEncryptionKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: KMS key for RDS encryption
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: Allow RDS to use the key
+            Effect: Allow
+            Principal:
+              Service: rds.amazonaws.com
+            Action:
+              - 'kms:Decrypt'
+              - 'kms:GenerateDataKey'
+              - 'kms:CreateGrant'
+            Resource: '*'
+
+  DBEncryptionKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/${Environment}-rds-encryption'
+      TargetKeyId: !Ref DBEncryptionKey
+
+  # Primary Database Instance (Multi-AZ)
+  PrimaryDatabase:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub '${Environment}-primary-db'
+      DBInstanceClass: !Ref DBInstanceClass
+      Engine: postgres
+      EngineVersion: '14.7'
+
+      # Storage
+      AllocatedStorage: !Ref DBAllocatedStorage
+      StorageType: gp3
+      Iops: 12000  # gp3 baseline is 3000, can provision up to 16000
+      StorageEncrypted: true
+      KmsKeyId: !Ref DBEncryptionKey
+      StorageThroughput: 500  # gp3 allows 125-1000 MB/s
+
+      # Database configuration
+      DBName: !Ref DBName
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+
+      # High Availability
+      MultiAZ: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+
+      # Network
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      PubliclyAccessible: false
+
+      # Parameter and Option Groups
+      DBParameterGroupName: !Ref DBParameterGroup
+      OptionGroupName: !Ref DBOptionGroup
+
+      # Backup and Maintenance
+      BackupRetentionPeriod: 30  # 30 days for production
+      PreferredBackupWindow: '03:00-04:00'  # UTC
+      PreferredMaintenanceWindow: 'sun:04:00-sun:05:00'
+      CopyTagsToSnapshot: true
+      DeleteAutomatedBackups: false
+
+      # Monitoring
+      EnableCloudwatchLogsExports:
+        - postgresql
+        - upgrade
+      EnablePerformanceInsights: true
+      PerformanceInsightsRetentionPeriod: 7
+      PerformanceInsightsKMSKeyId: !Ref DBEncryptionKey
+      MonitoringInterval: 60  # Enhanced monitoring every 60 seconds
+      MonitoringRoleArn: !GetAtt EnhancedMonitoringRole.Arn
+
+      # Security
+      DeletionProtection: true
+      EnableIAMDatabaseAuthentication: true
+
+      # Auto minor version upgrade
+      AutoMinorVersionUpgrade: false  # Manual control for production
+
+      Tags:
+        - Key: Name
+          Value: !Sub '${Environment}-primary-db'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Role
+          Value: primary
+
+  # Read Replica 1 (Same Region, Different AZ)
+  ReadReplica1:
+    Type: AWS::RDS::DBInstance
+    DependsOn: PrimaryDatabase
+    Properties:
+      DBInstanceIdentifier: !Sub '${Environment}-read-replica-1'
+      SourceDBInstanceIdentifier: !Ref PrimaryDatabase
+      DBInstanceClass: !Ref DBInstanceClass
+
+      # Availability
+      AvailabilityZone: !Select [1, !GetAZs '']
+
+      # Storage (inherited from source but can be increased)
+      StorageType: gp3
+      Iops: 12000
+      StorageThroughput: 500
+
+      # Read replica specific
+      SourceRegion: !Ref 'AWS::Region'
+
+      # Monitoring
+      EnablePerformanceInsights: true
+      PerformanceInsightsRetentionPeriod: 7
+      PerformanceInsightsKMSKeyId: !Ref DBEncryptionKey
+      MonitoringInterval: 60
+      MonitoringRoleArn: !GetAtt EnhancedMonitoringRole.Arn
+
+      Tags:
+        - Key: Name
+          Value: !Sub '${Environment}-read-replica-1'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Role
+          Value: read-replica
+
+  # Read Replica 2 (Same Region, Different AZ)
+  ReadReplica2:
+    Type: AWS::RDS::DBInstance
+    DependsOn: PrimaryDatabase
+    Properties:
+      DBInstanceIdentifier: !Sub '${Environment}-read-replica-2'
+      SourceDBInstanceIdentifier: !Ref PrimaryDatabase
+      DBInstanceClass: db.r6g.large  # Can use smaller instance for less critical reads
+
+      AvailabilityZone: !Select [2, !GetAZs '']
+
+      StorageType: gp3
+      Iops: 6000
+      StorageThroughput: 250
+
+      EnablePerformanceInsights: true
+      PerformanceInsightsRetentionPeriod: 7
+      MonitoringInterval: 60
+      MonitoringRoleArn: !GetAtt EnhancedMonitoringRole.Arn
+
+      Tags:
+        - Key: Name
+          Value: !Sub '${Environment}-read-replica-2'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Role
+          Value: read-replica
+
+  # IAM Role for Enhanced Monitoring
+  EnhancedMonitoringRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Environment}-rds-monitoring-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: monitoring.rds.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # CloudWatch Alarms
+  HighCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-rds-high-cpu'
+      AlarmDescription: Alert when CPU exceeds 80%
+      MetricName: CPUUtilization
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref PrimaryDatabase
+      # AlarmActions:
+      #   - !Ref SNSTopic  # Add SNS topic for notifications
+
+  LowStorageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-rds-low-storage'
+      AlarmDescription: Alert when free storage is below 20GB
+      MetricName: FreeStorageSpace
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 21474836480  # 20GB in bytes
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref PrimaryDatabase
+
+  HighConnectionsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-rds-high-connections'
+      AlarmDescription: Alert when database connections exceed 400
+      MetricName: DatabaseConnections
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 400
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref PrimaryDatabase
+
+  ReplicaLagAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-rds-replica-lag'
+      AlarmDescription: Alert when replica lag exceeds 5 seconds
+      MetricName: ReplicaLag
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref ReadReplica1
+
+  # Route 53 Records for Database Endpoints (optional but recommended)
+  PrimaryDBRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: CreateRoute53Records
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub 'db-primary.${Environment}.internal'
+      Type: CNAME
+      TTL: 300
+      ResourceRecords:
+        - !GetAtt PrimaryDatabase.Endpoint.Address
+
+  ReadReplicaRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: CreateRoute53Records
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub 'db-read.${Environment}.internal'
+      Type: CNAME
+      TTL: 60
+      SetIdentifier: replica-1
+      Weight: 100
+      ResourceRecords:
+        - !GetAtt ReadReplica1.Endpoint.Address
+
+Conditions:
+  CreateRoute53Records: !Not [!Equals [!Ref HostedZoneId, '']]
+
+Parameters:
+  HostedZoneId:
+    Type: String
+    Default: ''
+    Description: Route 53 Hosted Zone ID (optional)
+
+Outputs:
+  PrimaryEndpoint:
+    Description: Primary database endpoint
+    Value: !GetAtt PrimaryDatabase.Endpoint.Address
+    Export:
+      Name: !Sub '${Environment}-db-primary-endpoint'
+
+  PrimaryPort:
+    Description: Primary database port
+    Value: !GetAtt PrimaryDatabase.Endpoint.Port
+
+  ReadReplica1Endpoint:
+    Description: Read replica 1 endpoint
+    Value: !GetAtt ReadReplica1.Endpoint.Address
+    Export:
+      Name: !Sub '${Environment}-db-read-1-endpoint'
+
+  ReadReplica2Endpoint:
+    Description: Read replica 2 endpoint
+    Value: !GetAtt ReadReplica2.Endpoint.Address
+    Export:
+      Name: !Sub '${Environment}-db-read-2-endpoint'
+
+  DBSecurityGroupId:
+    Description: Database security group ID
+    Value: !Ref DBSecurityGroup
+    Export:
+      Name: !Sub '${Environment}-db-security-group'
+
+# Usage Instructions:
+#
+# 1. Deploy the stack:
+#    aws cloudformation create-stack \
+#      --stack-name production-rds \
+#      --template-body file://rds-complete.yaml \
+#      --parameters \
+#        ParameterKey=Environment,ParameterValue=production \
+#        ParameterKey=DBPassword,ParameterValue=YourStrongPassword123! \
+#        ParameterKey=VPCId,ParameterValue=vpc-xxxxx \
+#        ParameterKey=PrivateSubnetIds,ParameterValue=subnet-xxx\\,subnet-yyy \
+#        ParameterKey=ApplicationSecurityGroupId,ParameterValue=sg-xxxxx \
+#      --capabilities CAPABILITY_NAMED_IAM
+#
+# 2. Connection strings:
+#    Write: postgresql://dbadmin:password@primary-endpoint:5432/myapp
+#    Read:  postgresql://dbadmin:password@replica-endpoint:5432/myapp
+#
+# 3. Best practices implemented:
+#    - Multi-AZ for high availability
+#    - Read replicas for read scaling
+#    - Encryption at rest with KMS
+#    - Enhanced monitoring
+#    - Performance Insights
+#    - Automated backups (30 days)
+#    - CloudWatch alarms
+#    - Optimized parameters
+#    - gp3 storage for cost/performance
+#    - Deletion protection
+#    - IAM database authentication
+#
+# 4. Estimated monthly cost (us-east-1):
+#    - Primary (db.r6g.xlarge): ~$285
+#    - Replica 1 (db.r6g.xlarge): ~$285
+#    - Replica 2 (db.r6g.large): ~$142
+#    - Storage (500GB gp3): ~$100
+#    - Backups (500GB): ~$50
+#    - Total: ~$862/month
+#
+# 5. Failover testing:
+#    aws rds reboot-db-instance \
+#      --db-instance-identifier production-primary-db \
+#      --force-failover

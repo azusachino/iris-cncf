@@ -1,0 +1,112 @@
+---
+# Default variables for common role
+
+# System configuration
+common_timezone: "UTC"
+common_swappiness: 10
+common_upgrade_packages: true
+
+# SSH configuration
+common_ssh_port: 22
+common_ssh_permit_root_login: "no"
+common_ssh_password_authentication: "no"
+common_ssh_pubkey_authentication: "yes"
+common_ssh_challenge_response_auth: "no"
+common_ssh_use_pam: "yes"
+common_ssh_x11_forwarding: "no"
+common_ssh_max_auth_tries: 3
+common_ssh_max_sessions: 10
+common_ssh_client_alive_interval: 300
+common_ssh_client_alive_count_max: 2
+
+# User management
+common_admin_group: "admins"
+common_admin_users: []
+# Example:
+# common_admin_users:
+#   - username: john
+#     ssh_key: "ssh-rsa AAAAB3..."
+#   - username: jane
+#     ssh_key: "ssh-rsa AAAAB3..."
+
+# Firewall configuration
+common_configure_firewall: true
+common_firewall_allowed_ports:
+  - { port: 22, proto: tcp, comment: 'SSH' }
+  - { port: 80, proto: tcp, comment: 'HTTP' }
+  - { port: 443, proto: tcp, comment: 'HTTPS' }
+
+# Fail2ban configuration
+common_install_fail2ban: true
+common_fail2ban_bantime: 3600
+common_fail2ban_findtime: 600
+common_fail2ban_maxretry: 5
+
+# Automatic updates
+common_enable_auto_updates: true
+common_auto_updates_mail: "root"
+common_auto_updates_blacklist: []
+common_auto_updates_origins_patterns:
+  - "${distro_id}:${distro_codename}-security"
+
+# Monitoring
+common_install_monitoring_agent: false
+common_monitoring_agent_type: "prometheus"
+
+# NTP configuration
+common_configure_ntp: true
+common_ntp_servers:
+  - 0.pool.ntp.org
+  - 1.pool.ntp.org
+  - 2.pool.ntp.org
+  - 3.pool.ntp.org
+
+# Logging
+common_log_retention_days: 30
+common_log_rotate_size: "100M"
+
+# Cron jobs (examples)
+common_cron_jobs: []
+# Example:
+# common_cron_jobs:
+#   - name: "Daily backup"
+#     minute: "0"
+#     hour: "2"
+#     job: "/opt/scripts/backup.sh"
+#   - name: "Weekly cleanup"
+#     minute: "0"
+#     hour: "3"
+#     weekday: "0"
+#     job: "/opt/scripts/cleanup.sh"
+
+# Package lists
+common_packages_debian:
+  - curl
+  - wget
+  - git
+  - vim
+  - htop
+  - net-tools
+  - unzip
+  - jq
+  - python3
+  - python3-pip
+  - ca-certificates
+  - gnupg
+  - lsb-release
+  - software-properties-common
+
+common_packages_redhat:
+  - curl
+  - wget
+  - git
+  - vim
+  - htop
+  - net-tools
+  - unzip
+  - jq
+  - python3
+  - python3-pip
+  - ca-certificates
+  - gnupg2
+  - redhat-lsb-core

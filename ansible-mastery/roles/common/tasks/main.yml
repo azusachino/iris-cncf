@@ -1,0 +1,292 @@
+---
+# Common server configuration role
+# Sets up baseline security, packages, and system configuration
+
+- name: Update apt cache
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+  when: ansible_os_family == "Debian"
+
+- name: Update yum cache
+  yum:
+    update_cache: yes
+  when: ansible_os_family == "RedHat"
+
+- name: Upgrade all packages
+  apt:
+    upgrade: dist
+    autoclean: yes
+    autoremove: yes
+  when: ansible_os_family == "Debian" and common_upgrade_packages | bool
+
+- name: Install common packages
+  package:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - curl
+    - wget
+    - git
+    - vim
+    - htop
+    - net-tools
+    - unzip
+    - jq
+    - python3
+    - python3-pip
+    - ca-certificates
+    - gnupg
+    - lsb-release
+
+- name: Set timezone
+  timezone:
+    name: "{{ common_timezone }}"
+
+- name: Configure hostname
+  hostname:
+    name: "{{ inventory_hostname }}"
+
+- name: Add hostname to /etc/hosts
+  lineinfile:
+    path: /etc/hosts
+    regexp: '^127\.0\.1\.1'
+    line: "127.0.1.1 {{ inventory_hostname }}"
+    state: present
+
+- name: Disable swap permanently
+  replace:
+    path: /etc/fstab
+    regexp: '^([^#].*?\sswap\s+sw\s+.*)$'
+    replace: '# \1'
+  notify: disable swap
+
+- name: Set swappiness
+  sysctl:
+    name: vm.swappiness
+    value: "{{ common_swappiness }}"
+    state: present
+    reload: yes
+
+- name: Create admin group
+  group:
+    name: "{{ common_admin_group }}"
+    state: present
+    system: yes
+
+- name: Create admin users
+  user:
+    name: "{{ item.username }}"
+    groups: "{{ common_admin_group }},sudo"
+    shell: /bin/bash
+    create_home: yes
+    state: present
+  loop: "{{ common_admin_users }}"
+  when: common_admin_users is defined
+
+- name: Add SSH keys for admin users
+  authorized_key:
+    user: "{{ item.username }}"
+    key: "{{ item.ssh_key }}"
+    state: present
+  loop: "{{ common_admin_users }}"
+  when: common_admin_users is defined and item.ssh_key is defined
+
+- name: Configure SSH server
+  template:
+    src: sshd_config.j2
+    dest: /etc/ssh/sshd_config
+    owner: root
+    group: root
+    mode: '0600'
+    validate: '/usr/sbin/sshd -t -f %s'
+  notify: restart sshd
+
+- name: Configure firewall (UFW)
+  block:
+    - name: Install UFW
+      apt:
+        name: ufw
+        state: present
+
+    - name: Allow SSH
+      ufw:
+        rule: allow
+        port: "{{ common_ssh_port }}"
+        proto: tcp
+        comment: 'SSH access'
+
+    - name: Set UFW default policies
+      ufw:
+        direction: "{{ item.direction }}"
+        policy: "{{ item.policy }}"
+      loop:
+        - { direction: 'incoming', policy: 'deny' }
+        - { direction: 'outgoing', policy: 'allow' }
+        - { direction: 'routed', policy: 'deny' }
+
+    - name: Enable UFW
+      ufw:
+        state: enabled
+  when: common_configure_firewall | bool
+
+- name: Install and configure fail2ban
+  block:
+    - name: Install fail2ban
+      apt:
+        name: fail2ban
+        state: present
+
+    - name: Configure fail2ban
+      template:
+        src: jail.local.j2
+        dest: /etc/fail2ban/jail.local
+        owner: root
+        group: root
+        mode: '0644'
+      notify: restart fail2ban
+
+    - name: Enable fail2ban service
+      service:
+        name: fail2ban
+        state: started
+        enabled: yes
+  when: common_install_fail2ban | bool
+
+- name: Configure system limits
+  pam_limits:
+    domain: "{{ item.domain }}"
+    limit_type: "{{ item.type }}"
+    limit_item: "{{ item.item }}"
+    value: "{{ item.value }}"
+  loop:
+    - { domain: '*', type: 'soft', item: 'nofile', value: '65536' }
+    - { domain: '*', type: 'hard', item: 'nofile', value: '65536' }
+    - { domain: '*', type: 'soft', item: 'nproc', value: '32768' }
+    - { domain: '*', type: 'hard', item: 'nproc', value: '32768' }
+
+- name: Configure kernel parameters
+  sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    state: present
+    sysctl_file: /etc/sysctl.d/99-custom.conf
+    reload: yes
+  loop:
+    - { name: 'net.ipv4.ip_forward', value: '1' }
+    - { name: 'net.ipv4.tcp_max_syn_backlog', value: '8192' }
+    - { name: 'net.core.somaxconn', value: '32768' }
+    - { name: 'net.ipv4.tcp_tw_reuse', value: '1' }
+    - { name: 'fs.file-max', value: '2097152' }
+    - { name: 'vm.max_map_count', value: '262144' }
+
+- name: Setup automatic security updates
+  block:
+    - name: Install unattended-upgrades
+      apt:
+        name:
+          - unattended-upgrades
+          - apt-listchanges
+        state: present
+
+    - name: Configure automatic updates
+      template:
+        src: 50unattended-upgrades.j2
+        dest: /etc/apt/apt.conf.d/50unattended-upgrades
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Enable automatic updates
+      template:
+        src: 20auto-upgrades.j2
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        owner: root
+        group: root
+        mode: '0644'
+  when: common_enable_auto_updates | bool and ansible_os_family == "Debian"
+
+- name: Configure logging
+  template:
+    src: rsyslog.conf.j2
+    dest: /etc/rsyslog.d/50-default.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart rsyslog
+
+- name: Install monitoring agent
+  include_tasks: monitoring.yml
+  when: common_install_monitoring_agent | bool
+
+- name: Setup NTP
+  block:
+    - name: Install chrony
+      apt:
+        name: chrony
+        state: present
+
+    - name: Configure chrony
+      template:
+        src: chrony.conf.j2
+        dest: /etc/chrony/chrony.conf
+        owner: root
+        group: root
+        mode: '0644'
+      notify: restart chrony
+
+    - name: Enable chrony service
+      service:
+        name: chrony
+        state: started
+        enabled: yes
+  when: common_configure_ntp | bool
+
+- name: Create common directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - /opt/scripts
+    - /opt/backups
+    - /var/log/custom
+
+- name: Install custom scripts
+  template:
+    src: "{{ item }}.j2"
+    dest: "/opt/scripts/{{ item }}"
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - backup.sh
+    - health-check.sh
+    - cleanup.sh
+
+- name: Setup cron jobs
+  cron:
+    name: "{{ item.name }}"
+    minute: "{{ item.minute | default('0') }}"
+    hour: "{{ item.hour | default('0') }}"
+    day: "{{ item.day | default('*') }}"
+    month: "{{ item.month | default('*') }}"
+    weekday: "{{ item.weekday | default('*') }}"
+    job: "{{ item.job }}"
+    state: "{{ item.state | default('present') }}"
+    user: "{{ item.user | default('root') }}"
+  loop: "{{ common_cron_jobs }}"
+  when: common_cron_jobs is defined
+
+- name: Display system information
+  debug:
+    msg:
+      - "Hostname: {{ ansible_hostname }}"
+      - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+      - "Kernel: {{ ansible_kernel }}"
+      - "Architecture: {{ ansible_architecture }}"
+      - "CPUs: {{ ansible_processor_vcpus }}"
+      - "Memory: {{ (ansible_memtotal_mb / 1024) | round(2) }} GB"
+      - "IP Address: {{ ansible_default_ipv4.address }}"
