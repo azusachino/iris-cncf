@@ -1,0 +1,47 @@
+# ArgoCD Application: guestbook-app
+#
+# This manifest defines an ArgoCD Application resource.
+# ArgoCD will monitor the specified Git repository and automatically
+# sync the Kubernetes manifests to the target cluster.
+#
+# This is the core of the GitOps workflow. Any changes pushed to the
+# `main` branch of the repository will be automatically deployed.
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: guestbook-app
+  namespace: argocd # ArgoCD typically runs in its own namespace
+spec:
+  # Project to which this application belongs
+  project: default
+
+  # Source of the Kubernetes manifests
+  source:
+    # URL of the Git repository
+    repoURL: 'https://github.com/argoproj/argocd-example-apps.git'
+    # The path within the repository where the manifests are located
+    path: guestbook
+    # The branch or tag to track
+    targetRevision: HEAD
+
+  # Destination cluster and namespace
+  destination:
+    # The address of the target Kubernetes cluster
+    # `https://kubernetes.default.svc` is a special value that means
+    # the cluster where ArgoCD is running.
+    server: 'https://kubernetes.default.svc'
+    # The namespace in the target cluster to deploy to
+    namespace: guestbook
+
+  # Sync policy
+  syncPolicy:
+    automated:
+      # Automatically prune resources that are no longer in Git
+      prune: true
+      # Allow ArgoCD to delete all resources when the Application is deleted
+      selfHeal: true
+    # Use `CreateNamespace=true` to have ArgoCD create the namespace if it
+    # does not exist. This is useful for bootstrapping new applications.
+    syncOptions:
+      - CreateNamespace=true

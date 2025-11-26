@@ -1,0 +1,19 @@
+# Kubernetes Service: guestbook-ui
+#
+# This manifest would also be in the `guestbook` directory of the Git repository.
+#
+# It defines a Service to expose the `guestbook-ui` deployment.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: guestbook-ui
+spec:
+  ports:
+  - port: 80
+    targetPort: 80
+  selector:
+    app: guestbook-ui
+  # In a real-world scenario, you would typically use a LoadBalancer
+  # or Ingress to expose the service to the internet.
+  type: ClusterIP

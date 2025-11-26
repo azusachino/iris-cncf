@@ -105,6 +105,7 @@ terraform destroy
 ## 📖 Learning Path
 
 ### Week 1: Terraform Fundamentals
+
 - HCL syntax and data types
 - Resources, data sources, variables
 - Outputs and locals
@@ -112,6 +113,7 @@ terraform destroy
 - Provider configuration
 
 ### Week 2: AWS with Terraform
+
 - VPC and networking
 - EC2 and Auto Scaling
 - Load balancers and Route 53
@@ -120,6 +122,7 @@ terraform destroy
 - Complete application deployment
 
 ### Week 3: Azure with Terraform
+
 - Virtual Networks and NSGs
 - Virtual Machines and Scale Sets
 - Azure Kubernetes Service
@@ -127,6 +130,7 @@ terraform destroy
 - Complete application deployment
 
 ### Week 4: GCP with Terraform
+
 - VPC and firewall rules
 - Compute Engine and Managed Instance Groups
 - Google Kubernetes Engine
@@ -134,6 +138,7 @@ terraform destroy
 - Complete application deployment
 
 ### Week 5: Modules and Best Practices
+
 - Creating reusable modules
 - Module composition
 - Module registry
@@ -141,6 +146,7 @@ terraform destroy
 - Documentation
 
 ### Week 6: Advanced Patterns
+
 - Remote state with locking
 - Workspaces for environments
 - Dynamic blocks and for_each
@@ -148,12 +154,14 @@ terraform destroy
 - Import existing infrastructure
 
 ### Week 7: Multi-Cloud Architecture
+
 - Cloud-agnostic abstractions
 - Cross-cloud networking
 - Multi-cloud Kubernetes
 - Disaster recovery patterns
 
 ### Week 8: Production & CI/CD
+
 - Terraform Cloud / Enterprise
 - GitOps with Terraform
 - Automated testing (Terratest)
@@ -165,12 +173,14 @@ terraform destroy
 ### 1. State Management
 
 **Local State:**
+
 ```hcl
 # terraform.tfstate in local directory
 # Simple but not suitable for teams
 ```
 
 **Remote State (Recommended):**
+
 ```hcl
 terraform {
   backend "s3" {
@@ -184,6 +194,7 @@ terraform {
 ```
 
 **Alternative Backends:**
+
 - **Azure**: azurerm (Storage Account)
 - **GCP**: gcs (Cloud Storage)
 - **Terraform Cloud**: remote
@@ -192,6 +203,7 @@ terraform {
 ### 2. Variables and Outputs
 
 **Variables:**
+
 ```hcl
 variable "environment" {
   description = "Environment name"
@@ -205,6 +217,7 @@ variable "environment" {
 ```
 
 **Outputs:**
+
 ```hcl
 output "vpc_id" {
   description = "ID of the VPC"
@@ -215,6 +228,7 @@ output "vpc_id" {
 ### 3. Modules
 
 **Module Structure:**
+
 ```
 module/
 ├── main.tf       # Resources
@@ -225,6 +239,7 @@ module/
 ```
 
 **Using Modules:**
+
 ```hcl
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
@@ -269,6 +284,7 @@ data "aws_availability_zones" "available" {
 ### 5. Advanced Features
 
 **For Each:**
+
 ```hcl
 resource "aws_instance" "server" {
   for_each = toset(["web", "api", "worker"])
@@ -283,6 +299,7 @@ resource "aws_instance" "server" {
 ```
 
 **Dynamic Blocks:**
+
 ```hcl
 resource "aws_security_group" "app" {
   name        = "app-sg"
@@ -302,6 +319,7 @@ resource "aws_security_group" "app" {
 ```
 
 **Conditional Resources:**
+
 ```hcl
 resource "aws_instance" "web" {
   count = var.create_instance ? 1 : 0
@@ -395,15 +413,18 @@ resource "aws_vpn_connection" "azure" {
 ## 🔒 Security Best Practices
 
 1. **Never commit secrets**
+
    - Use environment variables
    - Use secret management services (AWS Secrets Manager, Azure Key Vault, GCP Secret Manager)
    - Use Terraform Cloud for encrypted variables
 
 2. **Use remote state with encryption**
+
    - Enable encryption at rest
    - Use state locking (DynamoDB for S3, lease for Consul)
 
 3. **Scan for security issues**
+
    ```bash
    # tfsec
    tfsec .
@@ -416,6 +437,7 @@ resource "aws_vpn_connection" "azure" {
    ```
 
 4. **Principle of least privilege**
+
    - IAM roles for Terraform
    - Separate credentials per environment
 
@@ -427,16 +449,19 @@ resource "aws_vpn_connection" "azure" {
 ## 🧪 Testing
 
 ### Terraform Validate
+
 ```bash
 terraform validate
 ```
 
 ### Terraform Plan
+
 ```bash
 terraform plan -out=tfplan
 ```
 
 ### Terratest (Go-based testing)
+
 ```go
 package test
 
@@ -462,6 +487,7 @@ func TestTerraformVPC(t *testing.T) {
 ## 📊 Terraform Cloud / Enterprise
 
 Benefits:
+
 - Remote state management
 - Collaborative runs
 - Policy as Code (Sentinel)
@@ -474,6 +500,7 @@ Benefits:
 ### HashiCorp Certified: Terraform Associate
 
 Topics covered:
+
 1. Understand infrastructure as code (IaC) concepts
 2. Understand Terraform's purpose
 3. Understand Terraform basics
